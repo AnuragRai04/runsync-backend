@@ -2,7 +2,7 @@ const Run = require("../models/Run");
 
 const generateWeeklyPlan = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.user.id;
 
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
@@ -12,7 +12,10 @@ const generateWeeklyPlan = async (req, res) => {
       date: { $gte: sevenDaysAgo },
     });
 
+    console.log(`🔥 DEBUG: Found ${runs.length} runs for user ID: ${userId}`);
+
     if (!runs || runs.length === 0) {
+      console.log("No runs found. Returning beginner plan.");
       return res.status(200).json({
         plan: "Start with 2–3 easy runs this week at a comfortable pace (~6:30–7:00 min/km).",
       });
@@ -38,14 +41,28 @@ const generateWeeklyPlan = async (req, res) => {
       }
     });
 
-    const getAvg = (sum, count) =>
-      count > 0 ? (sum / count).toFixed(2) : "no data";
+    const getRawAvg = (sum, count) => (count > 0 ? sum / count : 0);
 
-    const basePace = (totalPaceSum / runs.length).toFixed(2);
-    const easyAvgPace = getAvg(stats.easy.paceSum, stats.easy.count);
-    const longAvgPace = getAvg(stats.long.paceSum, stats.long.count);
-    const tempoAvgPace = getAvg(stats.tempo.paceSum, stats.tempo.count);
-    const speedAvgPace = getAvg(stats.speed.paceSum, stats.speed.count);
+    const formatPace = (totalSeconds) => {
+      if (totalSeconds === 0) return "no data";
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = Math.floor(totalSeconds % 60);
+      return `${mins}:${secs.toString().padStart(2, "0")} min/km`;
+    };
+
+    const basePace = formatPace(totalPaceSum / runs.length);
+    const easyAvgPace = formatPace(
+      getRawAvg(stats.easy.paceSum, stats.easy.count),
+    );
+    const longAvgPace = formatPace(
+      getRawAvg(stats.long.paceSum, stats.long.count),
+    );
+    const tempoAvgPace = formatPace(
+      getRawAvg(stats.tempo.paceSum, stats.tempo.count),
+    );
+    const speedAvgPace = formatPace(
+      getRawAvg(stats.speed.paceSum, stats.speed.count),
+    );
 
     const prompt = `
 You are a professional running coach.
@@ -73,6 +90,7 @@ Important rules:
    - Tempo faster than base
    - Speed fastest
 4. Keep it achievable within 7 days
+5. Formatting: ONLY output paces in "mm:ss min/km" format. NEVER use raw seconds.
 
 Output format:
 Easy Run Pace:
@@ -83,7 +101,6 @@ Speed Pace:
 Advice:
 `;
 
-    // --- BULLETPROOF API CALL ---
     let apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
@@ -93,10 +110,8 @@ Advice:
       throw new Error("API Key is completely missing.");
     }
 
-    // Clean up invisible spaces from the .env file
     apiKey = apiKey.trim();
 
-    // UPDATED: Using the exact Gemini 3 Flash Preview model
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
 
     console.log("🌐 Sending data to Google Gemini...");

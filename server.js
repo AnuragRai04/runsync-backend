@@ -80,12 +80,14 @@ mongoose
 
 // --- 7. START SERVER ---
 const PORT = process.env.PORT || 5000;
-const LOCAL_IP = "192.168.137.1";
 
-server.listen(PORT, () => {
+// Adding '0.0.0.0' ensures the server listens on your local Wi-Fi IP, not just localhost!
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`---------------------------------------------`);
   console.log(`RunSync+ Backend is live!`);
-  console.log(`Local Access: http://localhost:${PORT}`);
-  console.log(`Network Access: http://${LOCAL_IP}:${PORT}`);
+  console.log(`Listening on Port: ${PORT}`);
+  console.log(
+    `Make sure your frontend config.js points to your current laptop IP!`,
+  );
   console.log(`---------------------------------------------`);
 });
