@@ -1,8 +1,14 @@
+const redis = require("../config/redis");
 const Run = require("../models/Run");
 
 const generateWeeklyPlan = async (req, res) => {
   try {
     const userId = req.user.id;
+    const cachedPlan = await redis.get(`ai:plan:${userId}`);
+    if (cachedPlan) {
+      console.log(`⚡ Returning cached plan for user ${userId}`);
+      return res.status(200).json({ plan: cachedPlan, fromCache: true });
+    }
 
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
@@ -16,8 +22,15 @@ const generateWeeklyPlan = async (req, res) => {
 
     if (!runs || runs.length === 0) {
       console.log("No runs found. Returning beginner plan.");
+      const beginnerPlan =
+        "Start with 2–3 easy runs this week at a comfortable pace (~6:30–7:00 min/km).";
+
+      // Save the beginner plan to Redis so we don't query the DB again!
+      await redis.set(`ai:plan:${userId}`, beginnerPlan, "EX", 86400);
+
       return res.status(200).json({
-        plan: "Start with 2–3 easy runs this week at a comfortable pace (~6:30–7:00 min/km).",
+        plan: beginnerPlan,
+        fromCache: false,
       });
     }
 
@@ -145,12 +158,15 @@ Advice:
 
     const data = await geminiResponse.json();
     const generatedPlan = data.candidates[0].content.parts[0].text;
-
     console.log("✅ AI Plan Generated Successfully!");
 
-    return res.status(200).json({
-      plan: generatedPlan.trim(),
-    });
+    // Store in Redis for 24 hours
+    await redis.set(`ai:plan:${userId}`, generatedPlan.trim(), "EX", 86400);
+    console.log(`💾 Plan cached for user ${userId}`);
+
+    return res
+      .status(200)
+      .json({ plan: generatedPlan.trim(), fromCache: false });
   } catch (error) {
     console.error("Error generating weekly plan:", error.message);
     return res.status(500).json({

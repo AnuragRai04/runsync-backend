@@ -1,9 +1,13 @@
+const { createAdapter } = require("@socket.io/redis-adapter");
+const Redis = require("ioredis");
+const rateLimiter = require("./middleware/rateLimiter");
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
+const redis = require("./config/redis");
 require("dotenv").config();
 
 // --- 1. ROUTE IMPORTS ---
@@ -20,6 +24,7 @@ const app = express();
 // --- 3. MIDDLEWARE ---
 app.use(cors());
 app.use(express.json()); // Parses incoming JSON requests
+app.use(rateLimiter);
 
 // --- 4. REST API ROUTES ---
 // Public routes (Signup/Login)
@@ -44,7 +49,10 @@ const io = new Server(server, {
  * send a valid JWT in the handshake, the connection is rejected.
  */
 io.use((socket, next) => {
-  const token = socket.handshake.auth.token;
+  const token =
+    socket.handshake.auth?.token ||
+    socket.handshake.headers?.authorization?.split(" ")[1] ||
+    socket.handshake.headers?.authorization;
 
   if (!token) {
     return next(new Error("Authentication error: No token provided"));
@@ -62,6 +70,15 @@ io.use((socket, next) => {
     return next(new Error("Authentication error: Invalid or expired token"));
   }
 });
+const pubClient = new Redis({
+  host: process.env.REDIS_HOST || "127.0.0.1",
+  port: process.env.REDIS_PORT || 6379,
+});
+
+const subClient = pubClient.duplicate();
+
+io.adapter(createAdapter(pubClient, subClient));
+console.log("✅ Socket.IO Redis Adapter Connected");
 
 // Pass the authenticated 'io' instance to your multiplayer logic handler
 socketHandler(io);

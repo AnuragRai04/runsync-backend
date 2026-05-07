@@ -1,6 +1,19 @@
 // Memory storage for active rooms
 // Structure: { [roomId]: { roomId, totalDistance, raceType, adminId, players: [] } }
-const rooms = {};
+const redis = require("../config/redis");
+
+const getRoom = async (roomId) => {
+  const room = await redis.get(`room:${roomId}`);
+  return room ? JSON.parse(room) : null;
+};
+
+const saveRoom = async (room) => {
+  await redis.set(`room:${room.roomId}`, JSON.stringify(room), "EX", 3600);
+};
+
+const deleteRoom = async (roomId) => {
+  await redis.del(`room:${roomId}`);
+};
 
 module.exports = (io) => {
   io.on("connection", (socket) => {
@@ -11,23 +24,22 @@ module.exports = (io) => {
     // ==========================================
     socket.on(
       "create_room",
-      ({ roomId, userId, name, totalDistance, raceType }) => {
-        if (rooms[roomId]) {
+      async ({ roomId, userId, name, totalDistance, raceType }) => {
+        const existingRoom = await getRoom(roomId);
+        if (existingRoom) {
           socket.emit("room_error", { message: "Room code already in use." });
           return;
         }
 
-        // Create room state
-        rooms[roomId] = {
+        const room = {
           roomId,
           totalDistance,
           raceType,
-          adminId: userId, // Creator is the admin
+          adminId: userId,
           players: [],
         };
 
-        // Add creator as the first player
-        rooms[roomId].players.push({
+        room.players.push({
           socketId: socket.id,
           userId,
           name,
@@ -36,19 +48,17 @@ module.exports = (io) => {
           isAdmin: true,
         });
 
+        await saveRoom(room);
         socket.join(roomId);
         console.log(`🏠 Room Created: ${roomId} by ${name}`);
-
-        // Emit full room state
-        io.to(roomId).emit("room_update", rooms[roomId]);
+        io.to(roomId).emit("room_update", room);
       },
     );
-
     // ==========================================
     // 2. JOIN ROOM
     // ==========================================
-    socket.on("join_room", ({ roomId, userId, name }) => {
-      const room = rooms[roomId];
+    socket.on("join_room", async ({ roomId, userId, name }) => {
+      const room = await getRoom(roomId);
 
       if (!room) {
         socket.emit("room_error", { message: "Room not found." });
@@ -60,7 +70,6 @@ module.exports = (io) => {
         return;
       }
 
-      // Prevent duplicate joins
       const existingPlayer = room.players.find((p) => p.userId === userId);
       if (!existingPlayer) {
         room.players.push({
@@ -73,35 +82,34 @@ module.exports = (io) => {
         });
       }
 
+      await saveRoom(room);
       socket.join(roomId);
       console.log(`👋 ${name} joined ${roomId}`);
-
       io.to(roomId).emit("room_update", room);
     });
 
     // ==========================================
     // 3. PLAYER READY
     // ==========================================
-    socket.on("player_ready", ({ roomId, userId }) => {
-      const room = rooms[roomId];
+    socket.on("player_ready", async ({ roomId, userId }) => {
+      const room = await getRoom(roomId);
       if (!room) return;
 
       const player = room.players.find((p) => p.userId === userId);
       if (player) {
         player.isReady = true;
+        await saveRoom(room);
         console.log(`✅ ${player.name} is ready in ${roomId}`);
         io.to(roomId).emit("room_update", room);
       }
     });
-
     // ==========================================
     // 4. START RACE
     // ==========================================
-    socket.on("start_race", ({ roomId, userId }) => {
-      const room = rooms[roomId];
+    socket.on("start_race", async ({ roomId, userId }) => {
+      const room = await getRoom(roomId);
       if (!room) return;
 
-      // Only Admin can start
       if (room.adminId !== userId) {
         socket.emit("room_error", {
           message: "Only the host can start the race.",
@@ -109,7 +117,6 @@ module.exports = (io) => {
         return;
       }
 
-      // Are all players ready?
       const allReady = room.players.every((p) => p.isReady);
       if (!allReady) {
         socket.emit("room_error", {
@@ -125,14 +132,14 @@ module.exports = (io) => {
     // ==========================================
     // 5. UPDATE DISTANCE
     // ==========================================
-    socket.on("update_distance", ({ roomId, userId, distance }) => {
-      const room = rooms[roomId];
+    socket.on("update_distance", async ({ roomId, userId, distance }) => {
+      const room = await getRoom(roomId);
       if (!room) return;
 
       const player = room.players.find((p) => p.userId === userId);
       if (player) {
         player.distance = distance;
-        // Broadcast ONLY the players array during the race for speed
+        await saveRoom(room);
         io.to(roomId).emit("race_update", room.players);
       }
     });
@@ -140,29 +147,33 @@ module.exports = (io) => {
     // ==========================================
     // 6. DISCONNECT (Cleanup & Admin Transfer)
     // ==========================================
-    socket.on("disconnect", () => {
+    socket.on("disconnect", async () => {
       console.log(`❌ User disconnected: ${socket.id}`);
 
-      for (const roomId in rooms) {
-        const room = rooms[roomId];
+      const keys = await redis.keys("room:*");
+
+      for (const key of keys) {
+        const room = await getRoom(key.replace("room:", ""));
+        if (!room) continue;
+
         const playerIndex = room.players.findIndex(
           (p) => p.socketId === socket.id,
         );
 
         if (playerIndex !== -1) {
           const removedPlayer = room.players.splice(playerIndex, 1)[0];
-          console.log(`🚪 ${removedPlayer.name} left ${roomId}`);
+          console.log(`🚪 ${removedPlayer.name} left ${room.roomId}`);
 
           if (room.players.length === 0) {
-            delete rooms[roomId];
-            console.log(`🗑️ Room ${roomId} deleted (empty)`);
+            await deleteRoom(room.roomId);
+            console.log(`🗑️ Room ${room.roomId} deleted (empty)`);
           } else {
-            // Admin auto-transfer if the host leaves
-            if (removedPlayer.isAdmin && room.players.length > 0) {
+            if (removedPlayer.isAdmin) {
               room.players[0].isAdmin = true;
               room.adminId = room.players[0].userId;
             }
-            io.to(roomId).emit("room_update", room);
+            await saveRoom(room);
+            io.to(room.roomId).emit("room_update", room);
           }
           break;
         }
