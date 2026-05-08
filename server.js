@@ -70,25 +70,32 @@ io.use((socket, next) => {
     return next(new Error("Authentication error: Invalid or expired token"));
   }
 });
-const pubClient = process.env.REDIS_URL
-  ? new Redis(process.env.REDIS_URL, {
-      family: 4,
-      tls: { rejectUnauthorized: false },
-    })
-  : new Redis({
-      host: process.env.REDIS_HOST || "127.0.0.1",
-      port: process.env.REDIS_PORT || 6379,
-    });
+let pubClient;
 
-pubClient.on("error", (err) => {
-  console.error("❌ PubClient Redis Error:", err.message);
-});
+if (process.env.REDIS_URL && process.env.REDIS_URL.startsWith("rediss://")) {
+  pubClient = new Redis(process.env.REDIS_URL, {
+    family: 4,
+    tls: { rejectUnauthorized: false },
+  });
+} else if (
+  process.env.REDIS_URL &&
+  process.env.REDIS_URL.startsWith("redis://")
+) {
+  pubClient = new Redis(process.env.REDIS_URL);
+} else {
+  pubClient = new Redis({
+    host: process.env.REDIS_HOST || "127.0.0.1",
+    port: process.env.REDIS_PORT || 6379,
+  });
+}
 
+pubClient.on("error", (err) =>
+  console.error("❌ PubClient Redis Error:", err.message),
+);
 const subClient = pubClient.duplicate();
-
-subClient.on("error", (err) => {
-  console.error("❌ SubClient Redis Error:", err.message);
-});
+subClient.on("error", (err) =>
+  console.error("❌ SubClient Redis Error:", err.message),
+);
 
 io.adapter(createAdapter(pubClient, subClient));
 console.log("✅ Socket.IO Redis Adapter Connected");
