@@ -1,6 +1,6 @@
-// Memory storage for active rooms
-// Structure: { [roomId]: { roomId, totalDistance, raceType, adminId, players: [] } }
 const redis = require("../config/redis");
+const { publish } = require("../services/pubsub/publisher");
+const EVENTS = require("../services/pubsub/events");
 
 const getRoom = async (roomId) => {
   const room = await redis.get(`room:${roomId}`);
@@ -36,24 +36,27 @@ module.exports = (io) => {
           totalDistance,
           raceType,
           adminId: userId,
-          players: [],
+          players: [
+            {
+              socketId: socket.id,
+              userId,
+              name,
+              distance: 0,
+              isReady: false,
+              isAdmin: true,
+            },
+          ],
         };
-
-        room.players.push({
-          socketId: socket.id,
-          userId,
-          name,
-          distance: 0,
-          isReady: false,
-          isAdmin: true,
-        });
 
         await saveRoom(room);
         socket.join(roomId);
         console.log(`🏠 Room Created: ${roomId} by ${name}`);
-        io.to(roomId).emit("room_update", room);
+
+        // Publish so ALL instances know room was created/updated
+        await publish(EVENTS.ROOM_UPDATED, { roomId, room });
       },
     );
+
     // ==========================================
     // 2. JOIN ROOM
     // ==========================================
@@ -64,7 +67,6 @@ module.exports = (io) => {
         socket.emit("room_error", { message: "Room not found." });
         return;
       }
-
       if (room.players.length >= 4) {
         socket.emit("room_error", { message: "Room is full (Max 4)." });
         return;
@@ -85,7 +87,9 @@ module.exports = (io) => {
       await saveRoom(room);
       socket.join(roomId);
       console.log(`👋 ${name} joined ${roomId}`);
-      io.to(roomId).emit("room_update", room);
+
+      // Publish updated room to all instances
+      await publish(EVENTS.ROOM_UPDATED, { roomId, room });
     });
 
     // ==========================================
@@ -100,9 +104,10 @@ module.exports = (io) => {
         player.isReady = true;
         await saveRoom(room);
         console.log(`✅ ${player.name} is ready in ${roomId}`);
-        io.to(roomId).emit("room_update", room);
+        await publish(EVENTS.ROOM_UPDATED, { roomId, room });
       }
     });
+
     // ==========================================
     // 4. START RACE
     // ==========================================
@@ -126,7 +131,8 @@ module.exports = (io) => {
       }
 
       console.log(`🏁 Race Started in ${roomId}!`);
-      io.to(roomId).emit("race_started", { message: "GO!" });
+      // Publish race start across all instances
+      await publish(EVENTS.RACE_STARTED, { roomId });
     });
 
     // ==========================================
@@ -140,12 +146,13 @@ module.exports = (io) => {
       if (player) {
         player.distance = distance;
         await saveRoom(room);
-        io.to(roomId).emit("race_update", room.players);
+        // Publish progress update — high frequency, lightweight payload
+        await publish(EVENTS.RACE_PROGRESS, { roomId, players: room.players });
       }
     });
 
     // ==========================================
-    // 6. DISCONNECT (Cleanup & Admin Transfer)
+    // 6. DISCONNECT
     // ==========================================
     socket.on("disconnect", async () => {
       console.log(`❌ User disconnected: ${socket.id}`);
@@ -173,7 +180,8 @@ module.exports = (io) => {
               room.adminId = room.players[0].userId;
             }
             await saveRoom(room);
-            io.to(room.roomId).emit("room_update", room);
+            // Publish player left to all instances
+            await publish(EVENTS.PLAYER_LEFT, { roomId: room.roomId, room });
           }
           break;
         }

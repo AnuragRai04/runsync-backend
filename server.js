@@ -103,6 +103,9 @@ console.log("✅ Socket.IO Redis Adapter Connected");
 // Pass the authenticated 'io' instance to your multiplayer logic handler
 socketHandler(io);
 
+const { createSubscriber } = require("./services/pubsub/subscriber");
+createSubscriber(io); // Starts listening to Redis channels on this instance
+
 // --- 6. DATABASE CONNECTION ---
 mongoose
   .connect(process.env.MONGO_URI)
